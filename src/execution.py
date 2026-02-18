@@ -58,11 +58,12 @@ class ExecutionHandler(ABC):
 
 class SimulatedExecutionHandler(ExecutionHandler):
     """
-    Naïve simulated broker that fills every order instantly
-    at the current market close price.
+    Simulated broker that fills orders at the latest close price
+    adjusted for configurable slippage and commission.
 
-    Suitable for initial backtesting where slippage modelling
-    is not yet required.
+    Slippage moves the fill price adversely:
+        BUY  → close × (1 + slippage_pct)
+        SELL → close × (1 - slippage_pct)
 
     Parameters
     ----------
@@ -79,6 +80,8 @@ class SimulatedExecutionHandler(ExecutionHandler):
     commission_pct : float
         Fee as a fraction of trade value (default 0.0005 = 0.05 %).
         Used only when ``commission_type == "variable"``.
+    slippage_pct : float
+        Adverse price impact as a fraction (default 0.001 = 0.1 %).
     """
 
     def __init__(
@@ -88,6 +91,7 @@ class SimulatedExecutionHandler(ExecutionHandler):
         commission_type: str = "fixed",
         commission_fixed: float = 1.00,
         commission_pct: float = 0.0005,
+        slippage_pct: float = 0.001,
     ) -> None:
         if commission_type not in ("fixed", "variable"):
             raise ValueError(
@@ -100,6 +104,7 @@ class SimulatedExecutionHandler(ExecutionHandler):
         self.commission_type: str = commission_type
         self.commission_fixed: float = commission_fixed
         self.commission_pct: float = commission_pct
+        self.slippage_pct: float = slippage_pct
 
     # ── helpers ──────────────────────────────────
 
@@ -138,7 +143,14 @@ class SimulatedExecutionHandler(ExecutionHandler):
             )
             return
 
-        fill_price: float = float(bar["close"])
+        raw_price: float = float(bar["close"])
+
+        # Apply slippage: adverse price movement
+        if event.direction == Direction.BUY:
+            fill_price = raw_price * (1.0 + self.slippage_pct)
+        else:
+            fill_price = raw_price * (1.0 - self.slippage_pct)
+
         commission: float = self._calculate_commission(
             fill_price, event.quantity
         )
@@ -153,11 +165,12 @@ class SimulatedExecutionHandler(ExecutionHandler):
 
         self.events_queue.put(fill)
         logger.info(
-            "FILL  %s %s %d @ %.4f  commission=%.2f  cost=%.2f",
+            "FILL  %s %s %d @ %.4f (slip %.4f)  comm=%.2f  cost=%.2f",
             event.direction.name,
             event.symbol,
             event.quantity,
             fill_price,
+            fill_price - raw_price,
             commission,
             fill.cost,
         )
